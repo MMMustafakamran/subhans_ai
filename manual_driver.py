@@ -50,6 +50,12 @@ class Driver(object):
         self.manual_override_timeout = 2.0  # seconds
         self.is_auto_shifting = True
         
+        # Steering control variables
+        self.steering_step = 0.02  # Smaller step for smoother steering
+        self.steering_return_rate = 0.01  # Rate at which steering returns to center
+        self.last_steer_time = time.time()
+        self.target_steer = 0.0  # Target steering value
+        
         # Start the manual input thread immediately
         self.manual_thread = threading.Thread(target=self._manual_input_loop, daemon=True)
         self.manual_thread.start()
@@ -110,6 +116,26 @@ class Driver(object):
     def onRestart(self):
         pass
 
+    def _update_steering(self):
+        """Update steering with smooth transitions and return to center"""
+        current_time = time.time()
+        dt = current_time - self.last_steer_time
+        self.last_steer_time = current_time
+
+        # Gradually return to center when no input
+        if self.last_steer_direction is None:
+            if abs(self.control.steer) > 0:
+                if self.control.steer > 0:
+                    self.control.steer = max(0, self.control.steer - self.steering_return_rate)
+                else:
+                    self.control.steer = min(0, self.control.steer + self.steering_return_rate)
+        else:
+            # Smoothly move towards target steering
+            if self.control.steer < self.target_steer:
+                self.control.steer = min(self.target_steer, self.control.steer + self.steering_step)
+            elif self.control.steer > self.target_steer:
+                self.control.steer = max(self.target_steer, self.control.steer - self.steering_step)
+
     def _manual_input_loop(self):
         '''Continuously listen for keyboard input and update control values.'''
         self.last_steer_direction = None
@@ -154,22 +180,14 @@ class Driver(object):
                                 print("Brake:", self.control.brake)
                                 
                         elif key == b'M':  # Right arrow (inverted: behaves as left)
-                            if self.last_steer_direction != "left" or self.control.steer > 0:
-                                self.control.steer = 0.0
-                                self.last_steer_direction = "left"
-                            else:
-                                self.control.steer -= 0.1
-                                self.control.steer = max(self.control.steer, -1.0)
-                                print("Right arrow pressed (inverted to left): steer =", self.control.steer)
+                            self.last_steer_direction = "left"
+                            self.target_steer = -1.0
+                            print("Right arrow pressed (inverted to left): steer =", self.control.steer)
                                 
                         elif key == b'K':  # Left arrow (inverted: behaves as right)
-                            if self.last_steer_direction != "right" or self.control.steer < 0:
-                                self.control.steer = 0.0
-                                self.last_steer_direction = "right"
-                            else:
-                                self.control.steer += 0.1
-                                self.control.steer = min(self.control.steer, 1.0)
-                                print("Left arrow pressed (inverted to right): steer =", self.control.steer)
+                            self.last_steer_direction = "right"
+                            self.target_steer = 1.0
+                            print("Left arrow pressed (inverted to right): steer =", self.control.steer)
                     else:
                         # Gear controls: "z" for gear up, "x" for gear down
                         if key.lower() == b'z':
@@ -185,12 +203,15 @@ class Driver(object):
                             self.is_auto_shifting = False
                             print("Manual gear down:", self.control.gear)
                             
+                # Update steering
+                self._update_steering()
+                
                 # Check if manual override timeout has expired
                 if not self.is_auto_shifting and time.time() - self.last_manual_shift_time > self.manual_override_timeout:
                     self.is_auto_shifting = True
                     print("Returning to automatic gear shifting")
                     
-                time.sleep(0.05)
+                time.sleep(0.01)  # Reduced sleep time for smoother updates
         else:
             # For Unix-like systems
             import select, tty, termios
